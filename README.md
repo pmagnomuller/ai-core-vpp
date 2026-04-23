@@ -54,6 +54,10 @@ Then open:
 - UI: `http://localhost:3000`
 - n8n: `http://localhost:5678`
 
+## UI Preview
+
+![VPP Operator Console](docs/images/operator-console.png)
+
 Stop everything:
 
 ```bash

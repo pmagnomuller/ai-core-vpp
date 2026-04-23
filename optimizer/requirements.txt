@@ -1,0 +1,7 @@
+grpcio==1.80.0
+protobuf==6.31.1
+langchain==0.3.7
+langchain-openai==0.2.9
+pydantic==2.9.2
+fastapi==0.115.5
+uvicorn[standard]==0.32.1

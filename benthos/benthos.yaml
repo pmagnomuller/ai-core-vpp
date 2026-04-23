@@ -1,0 +1,104 @@
+# Benthos stream for VPP-Core.
+#
+# Responsibilities:
+#   1. Consume raw telemetry JSON from Kafka (topic: telemetry.raw).
+#   2. Enrich each event with ingested_at and a low_battery flag via Bloblang.
+#   3. Fan out to two sinks:
+#        a. Postgres INSERT into telemetry_events (hot storage for the API).
+#        b. HTTP webhook to n8n when low_battery is true (triggers an alert
+#           workflow).
+#
+# The fan-out is tolerant: a Postgres hiccup doesn't drop alerts, and vice
+# versa. Low-battery events go down BOTH paths (we still want them persisted).
+
+input:
+  kafka:
+    addresses: [redpanda:9092]
+    topics: [telemetry.raw]
+    consumer_group: vpp-benthos
+    checkpoint_limit: 1024
+    start_from_oldest: true
+
+pipeline:
+  processors:
+    - mapping: |
+        # The raw Kafka payload is already JSON. Parse, enrich, re-emit.
+        root = this
+        root.ingested_at = now()
+        root.low_battery = this.battery_soc_pct < 20
+
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+      - sql_insert:
+          driver: postgres
+          dsn: postgres://vpp:vpp@postgres:5432/vpp?sslmode=disable
+          table: telemetry_events
+          columns:
+            - device_id
+            - ts
+            - kw_usage
+            - battery_soc_pct
+            - heatpump_status
+            - grid_price_eur_kwh
+            - low_battery
+            - ingested_at
+          args_mapping: |
+            root = [
+              this.device_id,
+              this.ts,
+              this.kw_usage,
+              this.battery_soc_pct,
+              this.heatpump_status,
+              this.grid_price_eur_kwh,
+              this.low_battery,
+              this.ingested_at
+            ]
+          max_in_flight: 8
+          batching:
+            count: 200
+            period: 500ms
+
+      # Only low-battery events go to the alerts sinks. The switch silently
+      # drops everything else (drop_on_match: true on the default case).
+      - switch:
+          cases:
+            - check: this.low_battery == true
+              output:
+                broker:
+                  pattern: fan_out
+                  outputs:
+                    # Persist a durable alert row so /alerts in the API works
+                    # even if n8n is down.
+                    - sql_insert:
+                        driver: postgres
+                        dsn: postgres://vpp:vpp@postgres:5432/vpp?sslmode=disable
+                        table: alerts
+                        columns: [device_id, kind, payload]
+                        args_mapping: |
+                          root = [
+                            this.device_id,
+                            "low_battery",
+                            this.format_json().string()
+                          ]
+                        max_in_flight: 4
+                    # Fire n8n webhook for visibility / downstream fan-out
+                    # (Slack, email, etc. can be wired up later in n8n).
+                    - http_client:
+                        url: http://n8n:5678/webhook/low-battery
+                        verb: POST
+                        headers:
+                          Content-Type: application/json
+                        timeout: 5s
+                        retries: 3
+            - check: true
+              output:
+                drop: {}
+
+logger:
+  level: INFO
+  format: json
+
+http:
+  address: 0.0.0.0:4195

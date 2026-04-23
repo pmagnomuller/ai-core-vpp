@@ -1,0 +1,18 @@
+.env
+*.env.local
+
+# Go
+/producer/producer
+/orchestrator/orchestrator
+*.test
+*.out
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Docker volumes/data
+/data/

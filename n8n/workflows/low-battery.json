@@ -1,0 +1,101 @@
+{
+  "name": "low-battery-alert",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "low-battery",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ef6a1e1a-0001-4f5b-8f9b-1a2b3c4d5e6f",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 300],
+      "webhookId": "vpp-low-battery"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "device_id",
+              "type": "string",
+              "value": "={{$json[\"body\"][\"device_id\"]}}"
+            },
+            {
+              "id": "2",
+              "name": "battery_soc_pct",
+              "type": "number",
+              "value": "={{$json[\"body\"][\"battery_soc_pct\"]}}"
+            },
+            {
+              "id": "3",
+              "name": "message",
+              "type": "string",
+              "value": "=Device {{$json[\"body\"][\"device_id\"]}} battery at {{$json[\"body\"][\"battery_soc_pct\"]}}% \u2014 recommend dispatching charge cycle from grid during off-peak window."
+            },
+            {
+              "id": "4",
+              "name": "severity",
+              "type": "string",
+              "value": "warning"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ef6a1e1a-0002-4f5b-8f9b-1a2b3c4d5e6f",
+      "name": "Format Alert",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, received: $json } }}",
+        "options": {}
+      },
+      "id": "ef6a1e1a-0003-4f5b-8f9b-1a2b3c4d5e6f",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [740, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Format Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1",
+  "id": "low-battery-workflow"
+}

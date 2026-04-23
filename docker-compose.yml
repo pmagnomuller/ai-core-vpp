@@ -1,0 +1,175 @@
+services:
+  # -------------------------------------------------------------------------
+  # Infrastructure
+  # -------------------------------------------------------------------------
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    container_name: vpp-redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.7
+    container_name: vpp-redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        rpk -X brokers=redpanda:9092 topic create telemetry.raw --partitions 4 || true
+        echo "topics ready"
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: vpp-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vpp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vpp}
+      POSTGRES_DB: ${POSTGRES_DB:-vpp}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  n8n:
+    image: n8nio/n8n:1.70.2
+    container_name: vpp-n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-vpp}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-vpp}
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-admin}
+      # Credentials encryption key: pinned so the committed workflow's
+      # Postgres credential can be decrypted on first boot.
+      N8N_ENCRYPTION_KEY: vpp-core-dev-encryption-key-please-change
+      N8N_SECURE_COOKIE: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      GENERIC_TIMEZONE: UTC
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8ndata:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # -------------------------------------------------------------------------
+  # Application services
+  # -------------------------------------------------------------------------
+  producer:
+    build:
+      context: .
+      dockerfile: producer/Dockerfile
+    container_name: vpp-producer
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: telemetry.raw
+      PRODUCER_DEVICES: ${PRODUCER_DEVICES:-1000}
+      PRODUCER_RATE_HZ: ${PRODUCER_RATE_HZ:-1}
+    ports:
+      - "9101:9101"
+
+  benthos:
+    image: jeffail/benthos:4.27
+    container_name: vpp-benthos
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./benthos/benthos.yaml:/benthos.yaml:ro
+    command: ["-c", "/benthos.yaml"]
+    ports:
+      - "4195:4195"
+
+  optimizer:
+    build:
+      context: .
+      dockerfile: optimizer/Dockerfile
+    container_name: vpp-optimizer
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      GRPC_PORT: "50051"
+      HTTP_PORT: "8081"
+    ports:
+      - "50051:50051"
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; urllib.request.urlopen(\"http://localhost:8081/healthz\", timeout=2); sys.exit(0)'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
+    container_name: vpp-orchestrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+      optimizer:
+        condition: service_healthy
+    environment:
+      HTTP_ADDR: ":8080"
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-vpp}:${POSTGRES_PASSWORD:-vpp}@postgres:5432/${POSTGRES_DB:-vpp}?sslmode=disable
+      OPTIMIZER_ADDR: optimizer:50051
+    ports:
+      - "8080:8080"
+
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    container_name: vpp-ui
+    depends_on:
+      orchestrator:
+        condition: service_started
+    ports:
+      - "3000:80"
+
+volumes:
+  pgdata:
+  n8ndata:

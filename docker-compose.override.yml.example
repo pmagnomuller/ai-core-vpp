@@ -1,0 +1,8 @@
+services:
+  redpanda:
+    ports: !override
+      - "29092:9092"
+      - "29644:9644"
+  postgres:
+    ports: !override
+      - "25432:5432"
